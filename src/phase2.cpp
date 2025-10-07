@@ -1,0 +1,318 @@
+#include "phase2.h"
+#include "ortools/sat/cp_model.h"
+#include "ortools/sat/cp_model_solver.h"
+#include <iostream>
+#include <map>
+#include <tuple>
+#include <unordered_map>
+#include <vector>
+#include <algorithm>
+
+using namespace operations_research;
+using namespace operations_research::sat;
+using namespace std;
+
+InitialSolution construct_initial_solution(const ProblemData &data)
+{
+    CpModelBuilder model;
+
+    // ---------- indices and sizes ----------
+    int I = (int)data.teachers.size();
+    int J = (int)data.courses.size();
+    int L = (int)data.classrooms.days.size();
+    int M = (int)data.classrooms.periods.size();
+
+    // sections per course
+    vector<int> S;
+    S.reserve(J);
+    for (int j = 0; j < J; ++j)
+        S.push_back((int)data.courses[j].sections.size());
+
+    // maps id -> index (useful for building outputs)
+    unordered_map<string, int> teacher_idx;
+    unordered_map<string, int> course_idx;
+    for (int i = 0; i < I; ++i)
+        teacher_idx[data.teachers[i].id] = i;
+    for (int j = 0; j < J; ++j)
+        course_idx[data.courses[j].id] = j;
+
+    // Build teacher time preference lookup: PT[i][l][m]
+    vector<vector<vector<int>>> PT(I, vector<vector<int>>(L, vector<int>(M, 0)));
+    for (int i = 0; i < I; ++i)
+    {
+        for (const auto &tp : data.teachers[i].time_pref)
+        {
+            int li = -1, mi = -1;
+            for (int l = 0; l < L; ++l)
+                if (data.classrooms.days[l] == tp.day)
+                {
+                    li = l;
+                    break;
+                }
+            for (int m = 0; m < M; ++m)
+                if (data.classrooms.periods[m] == tp.period)
+                {
+                    mi = m;
+                    break;
+                }
+            if (li >= 0 && mi >= 0)
+                PT[i][li][mi] = tp.score;
+        }
+    }
+
+    // Course preference PC[i][j]
+    vector<vector<int>> PC(I, vector<int>(J, 0));
+    for (int i = 0; i < I; ++i)
+    {
+        for (int j = 0; j < J; ++j)
+        {
+            const auto &cid = data.courses[j].id;
+            if (data.teachers[i].course_pref.count(cid))
+                PC[i][j] = data.teachers[i].course_pref.at(cid);
+        }
+    }
+
+    // Helper: teacher eligible table
+    vector<vector<bool>> eligible(I, vector<bool>(J, false));
+    for (int i = 0; i < I; ++i)
+    {
+        for (int j = 0; j < J; ++j)
+        {
+            if (find(data.teachers[i].eligible_courses.begin(), data.teachers[i].eligible_courses.end(),
+                          data.courses[j].id) != data.teachers[i].eligible_courses.end())
+            {
+                eligible[i][j] = true;
+            }
+        }
+    }
+
+    // ---------- Variables ----------
+    // Y(i,j,k,l,m0) : teacher i starts section k of course j at day l, starting period m0
+    // We'll store in map keyed by tuple(i,j,k,l,m0)
+    using Key = tuple<int, int, int, int, int>;
+    map<Key, BoolVar> Y;
+
+    for (int i = 0; i < I; ++i)
+    {
+        for (int j = 0; j < J; ++j)
+        {
+            if (!eligible[i][j])
+                continue;
+            for (int k = 0; k < S[j]; ++k)
+            {
+                int r = data.courses[j].sections[k].required_periods;
+                for (int l = 0; l < L; ++l)
+                {
+                    for (int m0 = 0; m0 < M; ++m0)
+                    {
+                        if (m0 + r - 1 < M)
+                        {
+                            string name = string("Y_t") + to_string(i) + "_c" + to_string(j) + "_s" + to_string(k) + "_d" + to_string(l) + "_m" + to_string(m0);
+                            Y[Key(i,j,k,l,m0)] = model.NewBoolVar().WithName(name);;
+                        }
+                        // else m0 invalid start -> no var created
+                    }
+                }
+            }
+        }
+    }
+
+    // P(i,j) : teacher i teaches course j (binary), create only for eligible combos
+    map<pair<int, int>, BoolVar> P;
+    for (int i = 0; i < I; ++i)
+        for (int j = 0; j < J; ++j)
+            if (eligible[i][j])
+            {
+                string name = "P_t" + to_string(i) + "_c" + to_string(j);
+                P[{i, j}] = model.NewBoolVar().WithName(name);
+            }
+
+    // ---------- Constraints ----------
+
+    // 1) Each section must be scheduled exactly once (one teacher, one day, one start)
+    for (int j = 0; j < J; ++j)
+    {
+        for (int k = 0; k < S[j]; ++k)
+        {
+            LinearExpr sumStarts;
+            for (int i = 0; i < I; ++i)
+            {
+                if (!eligible[i][j])
+                    continue;
+                for (int l = 0; l < L; ++l)
+                    for (int m0 = 0; m0 < M; ++m0)
+                    {
+                        auto it = Y.find({i, j, k, l, m0});
+                        if (it != Y.end())
+                            sumStarts += it->second;
+                    }
+            }
+            model.AddEquality(sumStarts, 1);
+        }
+    }
+
+    // 2) Link P and Y: if any Y(i,j,k,.,.) = 1 => P(i,j) = 1, and if P=1 then sumY >= 1
+    for (int i = 0; i < I; ++i)
+        for (int j = 0; j < J; ++j)
+            if (eligible[i][j])
+            {
+                LinearExpr sumY_ij;
+                for (int k = 0; k < S[j]; ++k)
+                    for (int l = 0; l < L; ++l)
+                        for (int m0 = 0; m0 < M; ++m0)
+                        {
+                            auto it = Y.find({i, j, k, l, m0});
+                            if (it != Y.end())
+                                sumY_ij += it->second;
+                        }
+                // sumY_ij <= S[j] * P[i,j]
+                model.AddLessOrEqual(sumY_ij, LinearExpr(P[{i, j}]) * S[j]);
+                // sumY_ij >= P[i,j]  (if P=1 means teach at least one section)
+                model.AddGreaterOrEqual(sumY_ij, P[{i, j}]);
+            }
+
+    // 3) Teacher max/min courses: sum_j P[i,j] <= max_courses, each teacher must teach >=1
+    for (int i = 0; i < I; ++i)
+    {
+        LinearExpr sumP;
+        for (int j = 0; j < J; ++j)
+            if (eligible[i][j])
+                sumP += P[{i, j}];
+        model.AddGreaterOrEqual(sumP, 1); // if you require at least one course
+        model.AddLessOrEqual(sumP, data.teachers[i].max_courses);
+    }
+
+    // 4) Classroom capacity & teacher single-slot & course-per-time constraints:
+    // For every (l,m) we compute occupancy by summing Y that cover (l,m)
+    for (int l = 0; l < L; ++l)
+        for (int m = 0; m < M; ++m)
+        {
+            LinearExpr total_in_slot = 0;
+            // For course-per-slot restriction: for each course j ensure at most 1 section of this course in (l,m)
+            vector<LinearExpr> per_course_sum(J);
+            for (int j = 0; j < J; ++j)
+                per_course_sum[j] = LinearExpr(0);
+
+            for (int i = 0; i < I; ++i)
+            {
+                for (int j = 0; j < J; ++j)
+                {
+                    if (!eligible[i][j])
+                        continue;
+                    for (int k = 0; k < S[j]; ++k)
+                    {
+                        int r = data.courses[j].sections[k].required_periods;
+                        // any start m0 that covers m: m0 <= m <= m0 + r - 1
+                        for (int m0 = max(0, m - r + 1); m0 <= m; ++m0)
+                        {
+                            auto it = Y.find({i, j, k, l, m0});
+                            if (it != Y.end())
+                            {
+                                total_in_slot += it->second;
+                                per_course_sum[j] += it->second;
+                                // We will also need teacher-per-slot; accumulate separately after this loop
+                            }
+                        }
+                    }
+                }
+            }
+            // classroom capacity
+            int cap = data.classrooms.Clm.at(data.classrooms.days[l]).at(data.classrooms.periods[m]);
+            model.AddLessOrEqual(total_in_slot, cap);
+
+            // per course per slot <= 1
+            for (int j = 0; j < J; ++j)
+            {
+                model.AddLessOrEqual(per_course_sum[j], 1);
+            }
+        }
+
+    // 5) Each teacher at most 1 section per time slot (enforce by summing Y that cover slot for that teacher)
+    for (int i = 0; i < I; ++i)
+    {
+        for (int l = 0; l < L; ++l)
+            for (int m = 0; m < M; ++m)
+            {
+                LinearExpr teacher_slot = 0;
+                for (int j = 0; j < J; ++j)
+                {
+                    if (!eligible[i][j])
+                        continue;
+                    for (int k = 0; k < S[j]; ++k)
+                    {
+                        int r = data.courses[j].sections[k].required_periods;
+                        for (int m0 = max(0, m - r + 1); m0 <= m; ++m0)
+                        {
+                            auto it = Y.find({i, j, k, l, m0});
+                            if (it != Y.end())
+                                teacher_slot += it->second;
+                        }
+                    }
+                }
+                model.AddLessOrEqual(teacher_slot, 1);
+            }
+    }
+
+    // ---------- Objective ----------
+    // Maximize sum(PC[i][j] * P[i][j]) + sum_over_Y (sum_{t in covered periods} PT[i][l][t]) * Y
+    LinearExpr objective;
+    for (const auto &entry : P)
+    {
+        int i = entry.first.first;
+        int j = entry.first.second;
+        objective += LinearExpr(entry.second) * PC[i][j];
+    }
+    // time-pref contribution: for each Y, sum PT over each occupied period and weight by Y
+    for (auto &it : Y)
+    {
+        Key key = it.first;
+        int i, j, k, l, m0;
+        tie(i, j, k, l, m0) = key;
+        int r = data.courses[j].sections[k].required_periods;
+        int sumPT = 0;
+        for (int t = 0; t < r; ++t)
+        {
+            int m = m0 + t;
+            sumPT += PT[i][l][m];
+        }
+        objective += LinearExpr(it.second) * sumPT;
+    }
+    model.Maximize(objective);
+
+    // ---------- Solve with solver parameters ----------
+    Model sat_model;
+    sat_model.Add(NewSatParameters("max_time_in_seconds:30 num_search_workers:8 log_search_progress: false"));
+
+    auto response = SolveCpModel(model.Build(), &sat_model);
+
+    cout << "Phase2 solver status: " << CpSolverStatus_Name(response.status()) << "\n";
+
+    InitialSolution sol;
+    if (response.status() == CpSolverStatus::FEASIBLE || response.status() == CpSolverStatus::OPTIMAL)
+    {
+        // Extract assignments from Y (start vars)
+        for (auto &entry : Y)
+        {
+            Key key = entry.first;
+            const BoolVar &var = entry.second;
+            if (SolutionBooleanValue(response, var))
+            {
+                int i, j, k, l, m0;
+                tie(i, j, k, l, m0) = key;
+                InitialSolution::Assignment a;
+                a.teacher_id = data.teachers[i].id;
+                a.course_id = data.courses[j].id;
+                a.section_id = data.courses[j].sections[k].id;
+                a.day = data.classrooms.days[l];
+                a.period = data.classrooms.periods[m0]; // start period
+                sol.assignments.push_back(a);
+            }
+        }
+    }
+    else
+    {
+        cout << "No feasible solution found in Phase2.\n";
+    }
+
+    return sol;
+}

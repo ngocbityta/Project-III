@@ -10,9 +10,6 @@
 using json = nlohmann::json;
 using namespace std;
 
-// ---------------------------------------------------------
-// Helper: đọc file JSON thành kiểu T
-// ---------------------------------------------------------
 template <typename T>
 T read_json(const string &filename) {
     ifstream f(filename);
@@ -24,9 +21,7 @@ T read_json(const string &filename) {
     return j.get<T>();
 }
 
-// ---------------------------------------------------------
-// Khởi tạo dữ liệu bài toán từ JSON
-// ---------------------------------------------------------
+// ---------------------------------------------------------------------------
 ProblemData initialize_problem() {
     ProblemData data;
 
@@ -44,9 +39,7 @@ ProblemData initialize_problem() {
     f_courses >> j_courses;
     f_classrooms >> j_classrooms;
 
-    // ----------------------------
-    // Parse teachers
-    // ----------------------------
+    // ---------------------------------------------------------------------------
     for (const auto &t : j_teachers) {
         Teacher teacher;
         teacher.id = t["id"];
@@ -55,7 +48,6 @@ ProblemData initialize_problem() {
         teacher.eligible_courses = t["eligible_courses"].get<vector<string>>();
         teacher.course_pref = t["course_preferences"].get<map<string, int>>();
 
-        // Flatten day_time_preferences
         for (const auto &[day, periods] : t["day_time_preferences"].items()) {
             for (const auto &[period, score] : periods.items()) {
                 teacher.time_pref.push_back({day, period, score});
@@ -72,9 +64,7 @@ ProblemData initialize_problem() {
         data.teachers.push_back(teacher);
     }
 
-    // ----------------------------
-    // Parse courses
-    // ----------------------------
+    // ---------------------------------------------------------------------------
     for (const auto &c : j_courses) {
         Course course;
         course.id = c["id"];
@@ -105,9 +95,7 @@ ProblemData initialize_problem() {
         data.courses.push_back(course);
     }
 
-    // ----------------------------
-    // Parse classrooms
-    // ----------------------------
+    // ---------------------------------------------------------------------------
     data.classrooms.days = j_classrooms["days"].get<vector<string>>();
     data.classrooms.periods = j_classrooms["periods"].get<vector<string>>();
     data.classrooms.Clm = j_classrooms["classrooms_per_slot"]

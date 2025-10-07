@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ------------------------------------------------
 # Find dependencies
 # ------------------------------------------------
+find_package(ortools REQUIRED)  
 find_package(nlohmann_json REQUIRED)
 
 # ------------------------------------------------
@@ -31,7 +32,7 @@ target_link_directories(teacher_scheduler PRIVATE
 )
 
 target_link_libraries(teacher_scheduler PRIVATE
-    ortools
+    ortools::ortools
     nlohmann_json::nlohmann_json
 )
 

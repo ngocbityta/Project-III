@@ -5,5 +5,6 @@
 
 int main() {
     ProblemData data = initialize_problem();
+    InitialSolution init_sol = construct_initial_solution(data);
     return 0;
 }
