@@ -15,3 +15,4 @@ struct InitialSolution {
 
 // Hàm xây dựng phương án khởi đầu bằng Integer Programming
 InitialSolution construct_initial_solution(const ProblemData &data);
+void print_initial_solution(const InitialSolution &sol);

@@ -12,6 +12,25 @@ using namespace operations_research;
 using namespace operations_research::sat;
 using namespace std;
 
+void print_initial_solution(const InitialSolution &sol)
+{
+    if (sol.assignments.empty())
+    {
+        cout << "No assignments found in Phase2.\n";
+        return;
+    }
+
+    cout << "Phase2 Initial Solution:\n";
+    for (const auto &a : sol.assignments)
+    {
+        cout << "Teacher: " << a.teacher_id
+             << ", Course: " << a.course_id
+             << ", Section: " << a.section_id
+             << ", Day: " << a.day
+             << ", Start period: " << a.period << "\n";
+    }
+}
+
 InitialSolution construct_initial_solution(const ProblemData &data)
 {
     CpModelBuilder model;
@@ -79,7 +98,7 @@ InitialSolution construct_initial_solution(const ProblemData &data)
         for (int j = 0; j < J; ++j)
         {
             if (find(data.teachers[i].eligible_courses.begin(), data.teachers[i].eligible_courses.end(),
-                          data.courses[j].id) != data.teachers[i].eligible_courses.end())
+                     data.courses[j].id) != data.teachers[i].eligible_courses.end())
             {
                 eligible[i][j] = true;
             }
@@ -108,7 +127,8 @@ InitialSolution construct_initial_solution(const ProblemData &data)
                         if (m0 + r - 1 < M)
                         {
                             string name = string("Y_t") + to_string(i) + "_c" + to_string(j) + "_s" + to_string(k) + "_d" + to_string(l) + "_m" + to_string(m0);
-                            Y[Key(i,j,k,l,m0)] = model.NewBoolVar().WithName(name);;
+                            Y[Key(i, j, k, l, m0)] = model.NewBoolVar().WithName(name);
+                            ;
                         }
                         // else m0 invalid start -> no var created
                     }
@@ -167,7 +187,7 @@ InitialSolution construct_initial_solution(const ProblemData &data)
                         }
                 // sumY_ij <= S[j] * P[i,j]
                 model.AddLessOrEqual(sumY_ij, LinearExpr(P[{i, j}]) * S[j]);
-                // sumY_ij >= P[i,j]  (if P=1 means teach at least one section)
+                // sumY_ij >= P[i,j]
                 model.AddGreaterOrEqual(sumY_ij, P[{i, j}]);
             }
 
@@ -178,11 +198,24 @@ InitialSolution construct_initial_solution(const ProblemData &data)
         for (int j = 0; j < J; ++j)
             if (eligible[i][j])
                 sumP += P[{i, j}];
-        model.AddGreaterOrEqual(sumP, 1); // if you require at least one course
+        model.AddGreaterOrEqual(sumP, 1);
         model.AddLessOrEqual(sumP, data.teachers[i].max_courses);
     }
 
-    // 4) Classroom capacity & teacher single-slot & course-per-time constraints:
+    // 4) Each course must be taught by at least min_teachers, at most max_teachers
+    for (int j = 0; j < J; ++j)
+    {
+        LinearExpr sum_teachers = 0;
+        for (int i = 0; i < I; ++i)
+        {
+            if (eligible[i][j])
+                sum_teachers += P[{i, j}];
+        }
+        model.AddGreaterOrEqual(sum_teachers, data.courses[j].min_teachers);
+        model.AddLessOrEqual(sum_teachers, data.courses[j].max_teachers);
+    }
+
+    // 5) Classroom capacity & teacher single-slot & course-per-time constraints:
     // For every (l,m) we compute occupancy by summing Y that cover (l,m)
     for (int l = 0; l < L; ++l)
         for (int m = 0; m < M; ++m)
@@ -227,7 +260,7 @@ InitialSolution construct_initial_solution(const ProblemData &data)
             }
         }
 
-    // 5) Each teacher at most 1 section per time slot (enforce by summing Y that cover slot for that teacher)
+    // 6) Each teacher at most 1 section per time slot (enforce by summing Y that cover slot for that teacher)
     for (int i = 0; i < I; ++i)
     {
         for (int l = 0; l < L; ++l)
@@ -251,6 +284,47 @@ InitialSolution construct_initial_solution(const ProblemData &data)
                 }
                 model.AddLessOrEqual(teacher_slot, 1);
             }
+    }
+
+    // 7) Each teacher schedule should be spread evenly over days (add penalty when overloaded)
+
+    vector<int> total_sections(I, 0);
+    for (int i = 0; i < I; ++i)
+    {
+        for (int j = 0; j < J; ++j)
+        {
+            if (!eligible[i][j])
+                continue;
+            total_sections[i] += S[j];
+        }
+    }
+
+    map<pair<int, int>, IntVar> overload;
+    for (int i = 0; i < I; ++i)
+    {
+        int avg = (total_sections[i] + L - 1) / L;
+        for (int l = 0; l < L; ++l)
+        {
+            LinearExpr sections_on_day = 0;
+            for (int j = 0; j < J; ++j)
+            {
+                if (!eligible[i][j])
+                    continue;
+                for (int k = 0; k < S[j]; ++k)
+                    for (int m0 = 0; m0 < M; ++m0)
+                    {
+                        auto it = Y.find({i, j, k, l, m0});
+                        if (it != Y.end())
+                            sections_on_day += it->second;
+                    }
+            }
+
+            Domain d = Domain(0, total_sections[i]);
+
+            overload[{i, l}] = model.NewIntVar(d).WithName(
+                "overload_t" + std::to_string(i) + "_d" + std::to_string(l));
+            model.AddGreaterOrEqual(overload[{i, l}], sections_on_day - avg);
+        }
     }
 
     // ---------- Objective ----------
@@ -277,6 +351,11 @@ InitialSolution construct_initial_solution(const ProblemData &data)
         }
         objective += LinearExpr(it.second) * sumPT;
     }
+    for (auto &entry : overload)
+    {
+        objective -= entry.second;
+    }
+
     model.Maximize(objective);
 
     // ---------- Solve with solver parameters ----------
