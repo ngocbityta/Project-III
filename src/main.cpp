@@ -6,6 +6,6 @@
 int main() {
     ProblemData data = initialize_problem();
     InitialSolution init_sol = construct_initial_solution(data);
-    print_initial_solution(init_sol);
+    OptimalSolution optimal_sol = find_optimal_solution(data, init_sol);
     return 0;
 }

@@ -1,13 +1,13 @@
 #pragma once
 #include "phase1.h"
-
+using namespace std;
 struct InitialSolution {
     struct Assignment {
-        std::string teacher_id;
-        std::string course_id;
-        std::string section_id;
-        std::string day;
-        std::string period;
+        string teacher_id;
+        string course_id;
+        string section_id;
+        string day;
+        string period;
     };
 
     std::vector<Assignment> assignments;
@@ -15,4 +15,3 @@ struct InitialSolution {
 
 // Hàm xây dựng phương án khởi đầu bằng Integer Programming
 InitialSolution construct_initial_solution(const ProblemData &data);
-void print_initial_solution(const InitialSolution &sol);

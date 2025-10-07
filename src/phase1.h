@@ -3,46 +3,47 @@
 #include <vector>
 #include <map>
 #include <utility>
+using namespace std;
 
 struct TimePref {
-    std::string day;
-    std::string period;
+    string day;
+    string period;
     int score;
 };
 
 struct Teacher {
-    std::string id;
-    std::string name;
+    string id;
+    string name;
     int max_courses;
-    std::map<std::string, int> course_pref; // PC_ij
-    std::vector<TimePref> time_pref;        // PT_ilm
-    std::vector<std::string> eligible_courses;
-    std::vector<TimePref> LMi;              // sorted by preference
+    map<string, int> course_pref; // PC_ij
+    vector<TimePref> time_pref; // PT_ilm
+    vector<string> eligible_courses;
+    vector<TimePref> LMi;
 };
 
 struct Section {
-    std::string id;
+    string id;
     int required_periods;
 };
 
 struct Course {
-    std::string id;
-    std::string name;
-    std::vector<Section> sections;
+    string id;
+    string name;
+    vector<Section> sections;
     int min_teachers;
     int max_teachers;
-    std::vector<std::string> Ij;
+    vector<string> Ij;
 };
 
 struct ClassroomInfo {
-    std::vector<std::string> days;
-    std::vector<std::string> periods;
-    std::map<std::string, std::map<std::string, int>> Clm;
+    vector<string> days;
+    vector<string> periods;
+    map<string, map<string, int>> Clm;
 };
 
 struct ProblemData {
-    std::vector<Teacher> teachers;
-    std::vector<Course> courses;
+    vector<Teacher> teachers;
+    vector<Course> courses;
     ClassroomInfo classrooms;
 };
 

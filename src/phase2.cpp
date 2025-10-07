@@ -322,7 +322,7 @@ InitialSolution construct_initial_solution(const ProblemData &data)
             Domain d = Domain(0, total_sections[i]);
 
             overload[{i, l}] = model.NewIntVar(d).WithName(
-                "overload_t" + std::to_string(i) + "_d" + std::to_string(l));
+                "overload_t" + to_string(i) + "_d" + to_string(l));
             model.AddGreaterOrEqual(overload[{i, l}], sections_on_day - avg);
         }
     }
