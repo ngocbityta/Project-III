@@ -5,7 +5,5 @@
 
 int main() {
     ProblemData data = initialize_problem();
-    Solution sol = solve_with_ip(data);
-    Solution best = optimize_with_sa(sol, data);
     return 0;
 }

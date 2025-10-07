@@ -3,3 +3,6 @@ build/
 
 # Ignore or-tools folder
 or-tools/
+
+# Ignore _deps
+_deps/

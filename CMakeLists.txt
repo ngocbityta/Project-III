@@ -1,43 +1,45 @@
-cmake_minimum_required(VERSION 3.15...3.30)
-project(SchedulerAssignmentProject)
+cmake_minimum_required(VERSION 3.22)
+project(TeacherScheduler LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ----------------------------
-# OR-TOOLS
-# ----------------------------
-include_directories(${CMAKE_SOURCE_DIR}/ortools)
-include_directories(${CMAKE_SOURCE_DIR}/ortools/ortools)
-link_directories(${CMAKE_SOURCE_DIR}/ortools/build/lib)
+# ------------------------------------------------
+# Find dependencies
+# ------------------------------------------------
+find_package(nlohmann_json REQUIRED)
 
-# ----------------------------
-# NLOHMANN JSON (tự động tải)
-# ----------------------------
-include(FetchContent)
-FetchContent_Declare(
-  nlohmann_json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG v3.11.2
-)
-FetchContent_MakeAvailable(nlohmann_json)
-
-# ----------------------------
-# SOURCE FILES
-# ----------------------------
-add_executable(main
-    main.cpp
-    phase1.cpp
-    phase2.cpp
-    phase3.cpp
+# ------------------------------------------------
+# Source files
+# ------------------------------------------------
+add_executable(teacher_scheduler
+    src/main.cpp
+    src/phase1.cpp
+    src/phase2.cpp
+    src/phase3.cpp
 )
 
-target_include_directories(main PRIVATE ${CMAKE_SOURCE_DIR})
+# ------------------------------------------------
+# Include + link (Homebrew cài or-tools và json)
+# ------------------------------------------------
+target_include_directories(teacher_scheduler PRIVATE
+    /usr/local/include
+)
 
-# ----------------------------
-# LINK LIBRARIES
-# ----------------------------
-target_link_libraries(main
+target_link_directories(teacher_scheduler PRIVATE
+    /usr/local/lib
+)
+
+target_link_libraries(teacher_scheduler PRIVATE
     ortools
     nlohmann_json::nlohmann_json
 )
+
+# ------------------------------------------------
+# Output
+# ------------------------------------------------
+set_target_properties(teacher_scheduler PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build/bin
+    VS_DEBUGGER_WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+

@@ -45,3 +45,5 @@ struct ProblemData {
     std::vector<Course> courses;
     ClassroomInfo classrooms;
 };
+
+ProblemData initialize_problem();
