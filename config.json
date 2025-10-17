@@ -1,0 +1,11 @@
+{
+  "listeners": [
+    {
+      "address": "0.0.0.0",
+      "port": 8080
+    }
+  ],
+  "thread_num": 4,
+  "document_root": "./public",
+  "static": false
+}

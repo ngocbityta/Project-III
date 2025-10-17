@@ -23,4 +23,4 @@ cmake --build build
 
 ##  Chạy chương trình
 
-``` ./build/bin/teacher_scheduler.exe ```
+``` ./build/bin/teacher_scheduler ```

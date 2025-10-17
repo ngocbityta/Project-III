@@ -9,15 +9,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ------------------------------------------------
 find_package(ortools REQUIRED)  
 find_package(nlohmann_json REQUIRED)
+find_package(Drogon REQUIRED)
 
 # ------------------------------------------------
 # Source files
 # ------------------------------------------------
 add_executable(teacher_scheduler
     src/main.cpp
-    src/phase1.cpp
-    src/phase2.cpp
-    src/phase3.cpp
+    src/controller/TeacherSchedulerController.cpp
+    src/scheduler/phase1.cpp
+    src/scheduler/phase2.cpp
+    src/scheduler/phase3.cpp
 )
 
 # ------------------------------------------------
@@ -34,6 +36,12 @@ target_link_directories(teacher_scheduler PRIVATE
 target_link_libraries(teacher_scheduler PRIVATE
     ortools::ortools
     nlohmann_json::nlohmann_json
+)
+
+target_link_libraries(teacher_scheduler PRIVATE
+    ortools::ortools
+    nlohmann_json::nlohmann_json
+    Drogon::Drogon
 )
 
 # ------------------------------------------------

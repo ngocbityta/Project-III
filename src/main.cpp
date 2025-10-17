@@ -1,11 +1,9 @@
-#include "phase1.h"
-#include "phase2.h"
-#include "phase3.h"
-#include <iostream>
+#include <drogon/drogon.h>
+using namespace drogon;
 
 int main() {
-    ProblemData data = initialize_problem();
-    InitialSolution init_sol = construct_initial_solution(data);
-    OptimalSolution optimal_sol = find_optimal_solution(data, init_sol);
+    app().loadConfigFile("config.json");
+    LOG_INFO << "Starting Teacher Scheduler Application at port 8080";
+    app().run();
     return 0;
 }
