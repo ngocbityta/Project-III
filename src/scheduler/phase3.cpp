@@ -9,176 +9,298 @@
 #include <deque>
 #include <numeric>
 #include <unordered_set>
+#include <unordered_map>
 #include <sstream>
 #include <map>
 
 using namespace std;
 
-namespace {
-    // RNG global for file
+namespace
+{
     mt19937 rng(chrono::steady_clock::now().time_since_epoch().count());
 
-    // ---------- Utility helpers ----------
-    static int get_required_periods(const ProblemData &data, const string &course_id, const string &section_id) {
-        for (const auto &c : data.courses) {
-            if (c.id == course_id) {
+    // Build string key for slot
+    static inline string slot_key(const string &day, const string &period)
+    {
+        return day + "|" + period;
+    }
+
+    // Index structure to allow O(1) feasibility checks (per candidate)
+    struct SolIndex
+    {
+        // slot -> count
+        unordered_map<string, int> slot_count;
+
+        // teacher -> set of slot_keys (busy)
+        unordered_map<string, unordered_set<string>> teacher_busy;
+
+        // course -> slot_key -> section_id (to check same-course conflict)
+        unordered_map<string, unordered_map<string, string>> course_slot_section;
+
+        // course -> set of teachers teaching it (for min/max teacher bounds)
+        unordered_map<string, unordered_set<string>> course_teachers;
+    };
+
+    static SolIndex build_index(const OptimalSolution &sol)
+    {
+        SolIndex idx;
+        for (const auto &a : sol.assignments)
+        {
+            string sk = slot_key(a.day, a.period);
+            idx.slot_count[sk]++;
+            idx.teacher_busy[a.teacher_id].insert(sk);
+            idx.course_slot_section[a.course_id][sk] = a.section_id;
+            idx.course_teachers[a.course_id].insert(a.teacher_id);
+        }
+        return idx;
+    }
+
+    static int get_required_periods(const ProblemData &data, const string &course_id, const string &section_id)
+    {
+        for (const auto &c : data.courses)
+        {
+            if (c.id == course_id)
+            {
                 for (const auto &s : c.sections)
-                    if (s.id == section_id) return s.required_periods;
+                    if (s.id == section_id)
+                        return s.required_periods;
             }
         }
         return 1;
     }
 
-    static string assignment_sig(const OptimalSolution::Assignment &a) {
+    static string assignment_sig(const OptimalSolution::Assignment &a)
+    {
         ostringstream oss;
         oss << a.teacher_id << "|" << a.course_id << "|" << a.section_id << "|" << a.day << "|" << a.period;
         return oss.str();
     }
 
-    static string pair_sig(const OptimalSolution::Assignment &a, const OptimalSolution::Assignment &b) {
+    static string pair_sig(const OptimalSolution::Assignment &a, const OptimalSolution::Assignment &b)
+    {
         string s1 = assignment_sig(a), s2 = assignment_sig(b);
-        if (s1 < s2) return s1 + "<=>" + s2;
+        if (s1 < s2)
+            return s1 + "<=>" + s2;
         return s2 + "<=>" + s1;
     }
 
-    static int count_in_slot(const OptimalSolution &sol, const string &day, const string &period) {
-        int cnt = 0;
-        for (const auto &b : sol.assignments) if (b.day == day && b.period == period) ++cnt;
-        return cnt;
+    // ---------- Feasibility using index ----------
+    // Check course teacher bounds using idx
+    static bool check_course_teacher_bounds(const SolIndex &idx, const ProblemData &data)
+    {
+        for (const auto &c : data.courses)
+        {
+            auto it = idx.course_teachers.find(c.id);
+            int cnt = (it == idx.course_teachers.end()) ? 0 : (int)it->second.size();
+            if (cnt < c.min_teachers || cnt > c.max_teachers)
+                return false;
+        }
+        return true;
     }
 
-    static bool teacher_has_slot(const OptimalSolution &sol, const string &teacher_id, const string &day, const string &period) {
-        for (const auto &a : sol.assignments) if (a.teacher_id == teacher_id && a.day == day && a.period == period) return true;
-        return false;
-    }
-
-    // Find period index map
-    static unordered_map<string,int> build_period_index(const ProblemData &data) {
-        unordered_map<string,int> idx;
-        for (int i = 0; i < (int)data.classrooms.periods.size(); ++i) idx[data.classrooms.periods[i]] = i;
-        return idx;
-    }
-
-    // ---------- Feasibility ----------
+    // IsFeasibleBlock now uses the prebuilt index for O(1) lookups
     static bool IsFeasibleBlock(const string &teacher_id,
                                 const string &course_id,
                                 const string &section_id,
                                 const string &day,
                                 const string &start_period,
                                 const OptimalSolution &sol,
+                                const SolIndex &idx,
                                 const ProblemData &data)
     {
         // teacher exists and eligible
         auto it_teacher = find_if(data.teachers.begin(), data.teachers.end(),
-                                  [&](const Teacher &t){ return t.id == teacher_id; });
-        if (it_teacher == data.teachers.end()) return false;
+                                  [&](const Teacher &t)
+                                  { return t.id == teacher_id; });
+        if (it_teacher == data.teachers.end())
+            return false;
         if (find(it_teacher->eligible_courses.begin(), it_teacher->eligible_courses.end(), course_id) == it_teacher->eligible_courses.end())
             return false;
 
         int r = get_required_periods(data, course_id, section_id);
-        // find start idx
+
+        // find start idx in periods
         int start_idx = -1;
         for (int m = 0; m < (int)data.classrooms.periods.size(); ++m)
-            if (data.classrooms.periods[m] == start_period) { start_idx = m; break; }
-        if (start_idx < 0 || start_idx + r - 1 >= (int)data.classrooms.periods.size()) return false;
+            if (data.classrooms.periods[m] == start_period)
+            {
+                start_idx = m;
+                break;
+            }
+        if (start_idx < 0 || start_idx + r - 1 >= (int)data.classrooms.periods.size())
+            return false;
 
-        for (int t = 0; t < r; ++t) {
+        for (int t = 0; t < r; ++t)
+        {
             string period = data.classrooms.periods[start_idx + t];
-            if (teacher_has_slot(sol, teacher_id, day, period)) return false;
-            int cap = data.classrooms.Clm.at(day).at(period);
-            int cnt = count_in_slot(sol, day, period);
-            if (cnt >= cap) return false;
+            string sk = slot_key(day, period);
+
+            // --- teacher slot conflict (O(1)) ---
+            auto it_tb = idx.teacher_busy.find(teacher_id);
+            if (it_tb != idx.teacher_busy.end() && it_tb->second.find(sk) != it_tb->second.end())
+                return false;
+
+            // --- room capacity (O(1)) ---
+            auto day_it = data.classrooms.Clm.find(day);
+            if (day_it == data.classrooms.Clm.end())
+                return false;
+            auto period_it = day_it->second.find(period);
+            if (period_it == day_it->second.end())
+                return false;
+            int cap = period_it->second;
+            int cnt = 0;
+            auto it_sc = idx.slot_count.find(sk);
+            if (it_sc != idx.slot_count.end())
+                cnt = it_sc->second;
+            if (cnt >= cap)
+                return false;
+
+            // --- same-course conflict: check idx.course_slot_section ---
+            auto it_cs = idx.course_slot_section.find(course_id);
+            if (it_cs != idx.course_slot_section.end())
+            {
+                auto it_slot = it_cs->second.find(sk);
+                if (it_slot != it_cs->second.end() && it_slot->second != section_id)
+                    return false;
+            }
         }
         return true;
     }
 
+    // Convenience wrapper for single-period feasibility (keeps compatibility)
     static bool IsFeasible(const string &teacher_id,
                            const string &course_id,
                            const string &section_id,
                            const string &day,
                            const string &period,
                            const OptimalSolution &sol,
+                           const SolIndex &idx,
                            const ProblemData &data)
     {
-        // For simplicity, treat as block-check (works for r=1 as well)
-        return IsFeasibleBlock(teacher_id, course_id, section_id, day, period, sol, data);
+        return IsFeasibleBlock(teacher_id, course_id, section_id, day, period, sol, idx, data);
     }
 
     // ---------- Objective Evaluation ----------
-    static double compute_stddev(const vector<int> &vals) {
-        if (vals.empty()) return 0.0;
+    static double compute_stddev(const vector<int> &vals)
+    {
+        if (vals.empty())
+            return 0.0;
         double mean = accumulate(vals.begin(), vals.end(), 0.0) / vals.size();
         double s = 0.0;
-        for (double v : vals) s += (v - mean) * (v - mean);
+        for (double v : vals)
+            s += (v - mean) * (v - mean);
         return sqrt(s / vals.size());
     }
 
-    static int Evaluate(const OptimalSolution &sol, const ProblemData &data, int history_count = 0) {
+    static int Evaluate(const OptimalSolution &sol, const ProblemData &data, int history_count = 0)
+    {
         int score = 0;
-        for (const auto &a : sol.assignments) {
+        for (const auto &a : sol.assignments)
+        {
             auto it_t = find_if(data.teachers.begin(), data.teachers.end(),
-                                [&](const Teacher &t){ return t.id == a.teacher_id; });
-            if (it_t != data.teachers.end()) {
+                                [&](const Teacher &t)
+                                { return t.id == a.teacher_id; });
+            if (it_t != data.teachers.end())
+            {
                 auto pc_it = it_t->course_pref.find(a.course_id);
-                if (pc_it != it_t->course_pref.end()) score += pc_it->second;
+                if (pc_it != it_t->course_pref.end())
+                    score += pc_it->second;
                 for (const auto &tp : it_t->time_pref)
-                    if (tp.day == a.day && tp.period == a.period) score += tp.score;
+                    if (tp.day == a.day && tp.period == a.period)
+                        score += tp.score;
             }
         }
-        if (history_count > 3) score -= (history_count - 3);
+        if (history_count > 3)
+            score -= (history_count - 3);
         return score;
     }
 
     // ---------- Move operators (free functions) ----------
     // Each returns pair<changed, signature-string>
+    // Note: each move builds index(cand) once and uses it to test feasibility & course bounds
 
-    static pair<bool,string> move_single_change(OptimalSolution &sol, const ProblemData &data) {
-        if (sol.assignments.empty()) return {false, ""};
+    static pair<bool, string> move_single_change(OptimalSolution &sol, const ProblemData &data)
+    {
+        if (sol.assignments.empty())
+            return {false, ""};
         uniform_int_distribution<int> dist(0, (int)sol.assignments.size() - 1);
-        int idx = dist(rng);
-        auto &a = sol.assignments[idx];
+        int idx_assign = dist(rng);
+        auto &a = sol.assignments[idx_assign];
 
         // find course object
         auto it_course = find_if(data.courses.begin(), data.courses.end(),
-                                 [&](const Course &c){ return c.id == a.course_id; });
-        if (it_course == data.courses.end() || it_course->Ij.empty()) return {false, ""};
+                                 [&](const Course &c)
+                                 { return c.id == a.course_id; });
+        if (it_course == data.courses.end() || it_course->Ij.empty())
+            return {false, ""};
         const auto &course = *it_course;
 
         // try teacher change
         uniform_int_distribution<int> tdist(0, (int)course.Ij.size() - 1);
         string new_teacher = course.Ij[tdist(rng)];
-        if (new_teacher != a.teacher_id && IsFeasible(new_teacher, a.course_id, a.section_id, a.day, a.period, sol, data)) {
-            OptimalSolution::Assignment old = a;
-            a.teacher_id = new_teacher;
-            return {true, pair_sig(old, a)};
+        if (new_teacher != a.teacher_id)
+        {
+            OptimalSolution cand = sol;
+            cand.assignments[idx_assign].teacher_id = new_teacher;
+            SolIndex idx = build_index(cand);
+            if (!check_course_teacher_bounds(idx, data))
+                ; // reject due to teacher bounds
+            else if (IsFeasible(new_teacher, a.course_id, a.section_id, a.day, a.period, cand, idx, data))
+            {
+                OptimalSolution::Assignment old = a;
+                a.teacher_id = new_teacher;
+                return {true, pair_sig(old, a)};
+            }
         }
 
         // try relocate (few attempts)
         uniform_int_distribution<int> ldist(0, (int)data.classrooms.days.size() - 1);
         uniform_int_distribution<int> pdist(0, (int)data.classrooms.periods.size() - 1);
-        for (int t = 0; t < 6; ++t) {
+        for (int t = 0; t < 6; ++t)
+        {
             string new_day = data.classrooms.days[ldist(rng)];
             string new_period = data.classrooms.periods[pdist(rng)];
-            if (IsFeasible(a.teacher_id, a.course_id, a.section_id, new_day, new_period, sol, data)) {
+            if (new_day == a.day && new_period == a.period)
+                continue;
+            OptimalSolution cand = sol;
+            cand.assignments[idx_assign].day = new_day;
+            cand.assignments[idx_assign].period = new_period;
+            SolIndex idx = build_index(cand);
+            if (!check_course_teacher_bounds(idx, data))
+                continue;
+            if (IsFeasible(a.teacher_id, a.course_id, a.section_id, new_day, new_period, cand, idx, data))
+            {
                 OptimalSolution::Assignment old = a;
-                a.day = new_day; a.period = new_period;
+                a.day = new_day;
+                a.period = new_period;
                 return {true, pair_sig(old, a)};
             }
         }
         return {false, ""};
     }
 
-    static pair<bool,string> move_teacher_swap(OptimalSolution &sol, const ProblemData &data) {
-        if (sol.assignments.size() < 2) return {false, ""};
+    static pair<bool, string> move_teacher_swap(OptimalSolution &sol, const ProblemData &data)
+    {
+        if (sol.assignments.size() < 2)
+            return {false, ""};
         uniform_int_distribution<int> d(0, (int)sol.assignments.size() - 1);
         int i = d(rng), j = d(rng);
-        if (i == j) return {false, ""};
+        if (i == j)
+            return {false, ""};
         auto &A = sol.assignments[i];
         auto &B = sol.assignments[j];
-        if (A.teacher_id == B.teacher_id) return {false, ""};
+        if (A.teacher_id == B.teacher_id)
+            return {false, ""};
 
-        if (IsFeasible(B.teacher_id, A.course_id, A.section_id, A.day, A.period, sol, data) &&
-            IsFeasible(A.teacher_id, B.course_id, B.section_id, B.day, B.period, sol, data)) {
+        OptimalSolution cand = sol;
+        swap(cand.assignments[i].teacher_id, cand.assignments[j].teacher_id);
+        SolIndex idx = build_index(cand);
+        if (!check_course_teacher_bounds(idx, data))
+            return {false, ""};
+
+        if (IsFeasible(cand.assignments[i].teacher_id, A.course_id, A.section_id, A.day, A.period, cand, idx, data) &&
+            IsFeasible(cand.assignments[j].teacher_id, B.course_id, B.section_id, B.day, B.period, cand, idx, data))
+        {
             OptimalSolution::Assignment oldA = A, oldB = B;
             swap(A.teacher_id, B.teacher_id);
             return {true, pair_sig(oldA, oldB)};
@@ -186,17 +308,35 @@ namespace {
         return {false, ""};
     }
 
-    static pair<bool,string> move_pair_swap(OptimalSolution &sol, const ProblemData &data) {
-        if (sol.assignments.size() < 2) return {false, ""};
+    static pair<bool, string> move_pair_swap(OptimalSolution &sol, const ProblemData &data)
+    {
+        if (sol.assignments.size() < 2)
+            return {false, ""};
         uniform_int_distribution<int> d(0, (int)sol.assignments.size() - 1);
         int i = d(rng), j = d(rng);
-        if (i == j) return {false, ""};
+        if (i == j)
+            return {false, ""};
         auto a = sol.assignments[i];
         auto b = sol.assignments[j];
 
-        // attempt swap entire (teacher+slot)
-        if (IsFeasible(b.teacher_id, a.course_id, a.section_id, b.day, b.period, sol, data) &&
-            IsFeasible(a.teacher_id, b.course_id, b.section_id, a.day, a.period, sol, data)) {
+        // simulate swap entire (teacher+slot)
+        OptimalSolution cand = sol;
+        // place b into a's slot
+        cand.assignments[i].teacher_id = b.teacher_id;
+        cand.assignments[i].day = b.day;
+        cand.assignments[i].period = b.period;
+        // place a into b's slot
+        cand.assignments[j].teacher_id = a.teacher_id;
+        cand.assignments[j].day = a.day;
+        cand.assignments[j].period = a.period;
+
+        SolIndex idx = build_index(cand);
+        if (!check_course_teacher_bounds(idx, data))
+            return {false, ""};
+
+        if (IsFeasible(cand.assignments[i].teacher_id, a.course_id, a.section_id, cand.assignments[i].day, cand.assignments[i].period, cand, idx, data) &&
+            IsFeasible(cand.assignments[j].teacher_id, b.course_id, b.section_id, cand.assignments[j].day, cand.assignments[j].period, cand, idx, data))
+        {
             swap(sol.assignments[i].teacher_id, sol.assignments[j].teacher_id);
             swap(sol.assignments[i].day, sol.assignments[j].day);
             swap(sol.assignments[i].period, sol.assignments[j].period);
@@ -205,37 +345,65 @@ namespace {
         return {false, ""};
     }
 
-    static pair<bool,string> move_block_relocate(OptimalSolution &sol, const ProblemData &data) {
-        if (sol.assignments.empty()) return {false, ""};
+    static pair<bool, string> move_block_relocate(OptimalSolution &sol, const ProblemData &data)
+    {
+        if (sol.assignments.empty())
+            return {false, ""};
         uniform_int_distribution<int> d(0, (int)sol.assignments.size() - 1);
-        int idx = d(rng);
-        auto &a = sol.assignments[idx];
+        int idx_assign = d(rng);
+        auto &a = sol.assignments[idx_assign];
         int attempts = 6;
         uniform_int_distribution<int> ldist(0, (int)data.classrooms.days.size() - 1);
         uniform_int_distribution<int> pdist(0, (int)data.classrooms.periods.size() - 1);
-        for (int t = 0; t < attempts; ++t) {
+        for (int t = 0; t < attempts; ++t)
+        {
             string nd = data.classrooms.days[ldist(rng)];
             string np = data.classrooms.periods[pdist(rng)];
-            if (nd == a.day && np == a.period) continue;
-            if (IsFeasibleBlock(a.teacher_id, a.course_id, a.section_id, nd, np, sol, data)) {
+            if (nd == a.day && np == a.period)
+                continue;
+            OptimalSolution cand = sol;
+            cand.assignments[idx_assign].day = nd;
+            cand.assignments[idx_assign].period = np;
+            SolIndex idx = build_index(cand);
+            if (!check_course_teacher_bounds(idx, data))
+                continue;
+            if (IsFeasibleBlock(a.teacher_id, a.course_id, a.section_id, nd, np, cand, idx, data))
+            {
                 OptimalSolution::Assignment old = a;
-                a.day = nd; a.period = np;
+                a.day = nd;
+                a.period = np;
                 return {true, pair_sig(old, a)};
             }
         }
         return {false, ""};
     }
 
-    static pair<bool,string> move_block_swap(OptimalSolution &sol, const ProblemData &data) {
-        if (sol.assignments.size() < 2) return {false, ""};
+    static pair<bool, string> move_block_swap(OptimalSolution &sol, const ProblemData &data)
+    {
+        if (sol.assignments.size() < 2)
+            return {false, ""};
         uniform_int_distribution<int> d(0, (int)sol.assignments.size() - 1);
         int i = d(rng), j = d(rng);
-        if (i == j) return {false, ""};
+        if (i == j)
+            return {false, ""};
         auto A = sol.assignments[i];
         auto B = sol.assignments[j];
 
-        if (IsFeasibleBlock(A.teacher_id, A.course_id, A.section_id, B.day, B.period, sol, data) &&
-            IsFeasibleBlock(B.teacher_id, B.course_id, B.section_id, A.day, A.period, sol, data)) {
+        OptimalSolution cand = sol;
+        cand.assignments[i].day = B.day;
+        cand.assignments[i].period = B.period;
+        cand.assignments[i].teacher_id = B.teacher_id;
+        cand.assignments[j].day = A.day;
+        cand.assignments[j].period = A.period;
+        cand.assignments[j].teacher_id = A.teacher_id;
+
+        SolIndex idx = build_index(cand);
+        if (!check_course_teacher_bounds(idx, data))
+            return {false, ""};
+
+        if (IsFeasibleBlock(cand.assignments[i].teacher_id, A.course_id, A.section_id, cand.assignments[i].day, cand.assignments[i].period, cand, idx, data) &&
+            IsFeasibleBlock(cand.assignments[j].teacher_id, B.course_id, B.section_id, cand.assignments[j].day, cand.assignments[j].period, cand, idx, data))
+        {
             swap(sol.assignments[i].day, sol.assignments[j].day);
             swap(sol.assignments[i].period, sol.assignments[j].period);
             swap(sol.assignments[i].teacher_id, sol.assignments[j].teacher_id);
@@ -243,10 +411,12 @@ namespace {
         }
         return {false, ""};
     }
+
 } // anonymous namespace
 
 // ---------- Main Phase3 ----------
-OptimalSolution find_optimal_solution(const ProblemData &data, const InitialSolution &initial) {
+OptimalSolution find_optimal_solution(const ProblemData &data, const InitialSolution &initial)
+{
     OptimalSolution current = initial;
     OptimalSolution temp = initial;
     OptimalSolution best = initial;
@@ -259,17 +429,16 @@ OptimalSolution find_optimal_solution(const ProblemData &data, const InitialSolu
     deque<string> tabu_q;
     unordered_set<string> tabu_set;
     size_t tabu_tenure = 150; // tuneable
-    unordered_map<string,int> history_count;
+    unordered_map<string, int> history_count;
 
     // Neighborhoods ordered by increasing strength
-    using MoveFn = pair<bool,string>(*)(OptimalSolution&, const ProblemData&);
+    using MoveFn = pair<bool, string> (*)(OptimalSolution &, const ProblemData &);
     vector<MoveFn> neighborhoods = {
         &move_single_change,
         &move_teacher_swap,
         &move_pair_swap,
         &move_block_relocate,
-        &move_block_swap
-    };
+        &move_block_swap};
 
     // SA/VNS params
     double T = 1.0;
@@ -278,62 +447,81 @@ OptimalSolution find_optimal_solution(const ProblemData &data, const InitialSolu
     int moves_per_nb = 40;
     int limit_no_improv = 300;
 
-    vector<int> recent_objs; recent_objs.reserve(200);
+    deque<int> recent_objs;
     int numb_iter_no_improv = 0;
 
-    for (int iter = 0; iter < max_iterations; ++iter) {
+    for (int iter = 0; iter < max_iterations; ++iter)
+    {
         bool any_improved = false;
 
-        for (size_t nb = 0; nb < neighborhoods.size(); ++nb) {
+        for (size_t nb = 0; nb < neighborhoods.size(); ++nb)
+        {
             bool improved_in_nb = false;
 
-            for (int mv = 0; mv < moves_per_nb; ++mv) {
+            for (int mv = 0; mv < moves_per_nb; ++mv)
+            {
+                // Prepare candidate copy and try a move
                 OptimalSolution cand = current;
                 auto res = neighborhoods[nb](cand, data);
-                if (!res.first) continue;
+                if (!res.first)
+                    continue;
                 string sig = res.second;
 
                 // check tabu
-                if (!sig.empty() && tabu_set.find(sig) != tabu_set.end()) {
+                if (!sig.empty() && tabu_set.find(sig) != tabu_set.end())
+                {
                     int cand_score = Evaluate(cand, data, history_count[sig]);
-                    if (cand_score <= best.objective_value) continue; // reject unless aspiration
+                    if (cand_score <= best.objective_value)
+                        continue; // reject unless aspiration
                 }
 
                 int cand_score = Evaluate(cand, data, history_count[sig]);
                 int delta = cand_score - temp.objective_value;
 
                 bool accept = false;
-                if (delta >= 0) accept = true;
-                else {
+                if (delta >= 0)
+                    accept = true;
+                else
+                {
                     recent_objs.push_back(temp.objective_value);
-                    if (recent_objs.size() > 100) recent_objs.erase(recent_objs.begin());
-                    double sigma = compute_stddev(recent_objs);
+                    if (recent_objs.size() > 100)
+                        recent_objs.pop_front();
+                    vector<int> tmp(recent_objs.begin(), recent_objs.end());
+                    double sigma = compute_stddev(tmp);
                     double adaptive_T = 0.25 * T + 0.75 * (0.01 + sigma);
                     uniform_real_distribution<double> u(0.0, 1.0);
                     double prob = exp(delta / adaptive_T);
-                    if (u(rng) < prob) accept = true;
+                    if (u(rng) < prob)
+                        accept = true;
                 }
 
-                if (accept) {
+                if (accept)
+                {
                     current = cand;
                     temp = cand;
                     temp.objective_value = cand_score;
 
-                    if (!sig.empty()) {
+                    if (!sig.empty())
+                    {
                         history_count[sig] += 1;
                         tabu_q.push_back(sig);
                         tabu_set.insert(sig);
-                        if (tabu_q.size() > tabu_tenure) {
-                            string old = tabu_q.front(); tabu_q.pop_front();
+                        if (tabu_q.size() > tabu_tenure)
+                        {
+                            string old = tabu_q.front();
+                            tabu_q.pop_front();
                             tabu_set.erase(old);
                         }
                     }
 
-                    if (cand_score > best.objective_value) {
+                    if (cand_score > best.objective_value)
+                    {
                         best = cand;
                         best.objective_value = cand_score;
                         numb_iter_no_improv = 0;
-                    } else ++numb_iter_no_improv;
+                    }
+                    else
+                        ++numb_iter_no_improv;
 
                     improved_in_nb = true;
                     any_improved = true;
@@ -343,39 +531,64 @@ OptimalSolution find_optimal_solution(const ProblemData &data, const InitialSolu
                 }
             } // moves per neighborhood
 
-            if (!improved_in_nb) {
+            if (!improved_in_nb)
+            {
                 // go to next neighborhood (diversify)
                 continue;
             }
         } // neighborhoods
 
-        if (!any_improved) {
+        if (!any_improved)
+        {
             // diversification: random shakes
             int shakes = 4;
-            for (int s = 0; s < shakes; ++s) {
+            for (int s = 0; s < shakes; ++s)
+            {
                 OptimalSolution cand = current;
-                pair<bool,string> res = move_block_relocate(cand, data);
-                if (!res.first) res = move_teacher_swap(cand, data);
-                if (!res.first) res = move_pair_swap(cand, data);
-                if (!res.first) continue;
+                pair<bool, string> res = move_block_relocate(cand, data);
+                if (!res.first)
+                    res = move_teacher_swap(cand, data);
+                if (!res.first)
+                    res = move_pair_swap(cand, data);
+                if (!res.first)
+                    continue;
                 string sig = res.second;
+
                 int cand_score = Evaluate(cand, data, history_count[sig]);
 
                 uniform_real_distribution<double> u(0.0, 1.0);
                 recent_objs.push_back(temp.objective_value);
-                if (recent_objs.size() > 100) recent_objs.erase(recent_objs.begin());
-                double sigma = compute_stddev(recent_objs);
+                if (recent_objs.size() > 100)
+                    recent_objs.pop_front();
+                vector<int> tmp(recent_objs.begin(), recent_objs.end());
+                double sigma = compute_stddev(tmp);
                 double adaptive_T = 0.25 * T + 0.75 * (0.01 + sigma);
                 double prob = exp((cand_score - temp.objective_value) / adaptive_T);
-                if (u(rng) < prob) {
-                    current = cand; temp = cand; temp.objective_value = cand_score;
-                    if (!sig.empty()) {
+                if (u(rng) < prob)
+                {
+                    current = cand;
+                    temp = cand;
+                    temp.objective_value = cand_score;
+                    if (!sig.empty())
+                    {
                         history_count[sig] += 1;
-                        tabu_q.push_back(sig); tabu_set.insert(sig);
-                        if (tabu_q.size() > tabu_tenure) { string old = tabu_q.front(); tabu_q.pop_front(); tabu_set.erase(old); }
+                        tabu_q.push_back(sig);
+                        tabu_set.insert(sig);
+                        if (tabu_q.size() > tabu_tenure)
+                        {
+                            string old = tabu_q.front();
+                            tabu_q.pop_front();
+                            tabu_set.erase(old);
+                        }
                     }
-                    if (cand_score > best.objective_value) { best = cand; best.objective_value = cand_score; numb_iter_no_improv = 0; }
-                    else ++numb_iter_no_improv;
+                    if (cand_score > best.objective_value)
+                    {
+                        best = cand;
+                        best.objective_value = cand_score;
+                        numb_iter_no_improv = 0;
+                    }
+                    else
+                        ++numb_iter_no_improv;
                     break;
                 }
             }
@@ -383,18 +596,25 @@ OptimalSolution find_optimal_solution(const ProblemData &data, const InitialSolu
 
         // cooling & adapt alpha
         T *= alpha;
-        if (any_improved) alpha = min(0.995, alpha + 0.0006);
-        else alpha = max(0.92, alpha - 0.0009);
+        if (any_improved)
+            alpha = min(0.995, alpha + 0.0006);
+        else
+            alpha = max(0.92, alpha - 0.0009);
 
         // restart if stuck
-        if (numb_iter_no_improv > limit_no_improv) {
-            current = best; temp = best; numb_iter_no_improv = 0;
+        if (numb_iter_no_improv > limit_no_improv)
+        {
+            current = best;
+            temp = best;
+            numb_iter_no_improv = 0;
             shuffle(current.assignments.begin(), current.assignments.end(), rng);
             // small shake
-            for (int k = 0; k < (int)current.assignments.size() / 12; ++k) move_single_change(current, data);
+            for (int k = 0; k < (int)current.assignments.size() / 12; ++k)
+                move_single_change(current, data);
         }
 
-        if (iter % 50 == 0) {
+        if (iter % 50 == 0)
+        {
             cout << "[Phase3] Iter " << iter
                  << ", Best " << best.objective_value
                  << ", Temp " << T
